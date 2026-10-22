@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const ENDPOINT: StartupPurpose<CapabilityChannelObject> = StartupPurpose::new(0x8008_0001);
 pub const DESCRIPTION: StartupPurpose<VmoObject> = StartupPurpose::new(0x8008_0002);
 pub const ROOT_TRANSITION: u16 = 37;
-pub const COMMIT: &[u8] = b"HYPER-INIT-HANDOFF/3";
+pub const COMMIT: &[u8] = b"HYPER-INIT-HANDOFF/4";
 pub const FORWARD: &[u8] = b"HYPER-SYSTEM-STARTUP/1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -44,6 +44,8 @@ pub struct Offer {
     pub root_mount: u64,
     pub boot_root: String,
     pub services: Vec<CoreService>,
+    /// Formal policy must admit this component before accepting storage owners.
+    pub storage_successor: Option<String>,
     pub storage_ready: bool,
     pub slots: Vec<Slot>,
 }
@@ -66,7 +68,7 @@ impl Offer {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != 3
+        if self.version != 4
             || self.root_mount == 0
             || self.services.len() > 24
             || self.slots.len() > 64
@@ -98,11 +100,26 @@ impl Offer {
                 return Err(Error::MissingHandle);
             }
             if let Some(role) = &service.provider
-                && (!matches!(role.as_str(), "console" | "io" | "filesystem")
+                && (!matches!(role.as_str(), "console" | "storage" | "filesystem")
                     || !roles.insert(role))
             {
                 return Err(Error::InvalidResponse);
             }
+        }
+        if roles.iter().any(|role| role.as_str() == "storage") != self.storage_successor.is_some()
+            || self.storage_successor.as_deref().is_some_and(|path| {
+                !path.starts_with('/')
+                    || path.len() > 255
+                    || path.split('/').skip(1).any(|part| {
+                        part.is_empty()
+                            || matches!(part, "." | "..")
+                            || !part
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+                    })
+            })
+        {
+            return Err(Error::InvalidResponse);
         }
         Ok(())
     }
@@ -228,3 +245,48 @@ pub fn lock_candidate(startup: &Startup<'_>, root_mount: u64) -> Result<()> {
 }
 
 pub mod retirement;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offer() -> Offer {
+        Offer {
+            version: 4,
+            root_mount: 1,
+            boot_root: "/boot".into(),
+            services: Vec::new(),
+            storage_successor: None,
+            storage_ready: true,
+            slots: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 30, 31, 32, 33, 37]
+                .into_iter()
+                .map(|key| Slot {
+                    key,
+                    rights: Rights::READ.bits(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn storage_role_and_selected_formal_component_travel_together() {
+        let mut value = offer();
+        assert!(value.validate().is_ok());
+        value.services.push(CoreService {
+            name: "block".into(),
+            image: "/svc/native-block".into(),
+            critical: false,
+            provider: Some("storage".into()),
+        });
+        assert!(value.validate().is_err());
+        value.storage_successor = Some("/storage/native".into());
+        assert!(value.validate().is_ok());
+        for invalid in ["", "/", "/../io", "/io/", "/io\n", "io", "/io//native"] {
+            value.storage_successor = Some(invalid.into());
+            assert!(value.validate().is_err(), "{invalid:?}");
+        }
+        value.storage_successor = Some("/io-runtime".into());
+        value.services.clear();
+        assert!(value.validate().is_err());
+    }
+}
