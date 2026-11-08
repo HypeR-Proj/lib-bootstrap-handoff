@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const ENDPOINT: StartupPurpose<CapabilityChannelObject> = StartupPurpose::new(0x8008_0001);
 pub const DESCRIPTION: StartupPurpose<VmoObject> = StartupPurpose::new(0x8008_0002);
 pub const ROOT_TRANSITION: u16 = 37;
+pub const EXECUTABLE_AUTHORITY: u16 = 38;
 pub const COMMIT: &[u8] = b"HYPER-INIT-HANDOFF/4";
 pub const FORWARD: &[u8] = b"HYPER-SYSTEM-STARTUP/1";
 
@@ -62,7 +63,11 @@ impl Offer {
         }
         let mut bytes = vec![0; length];
         vmo.read_exact_at(8, &mut bytes)?;
-        let value: Self = serde_json::from_slice(&bytes).map_err(|_| Error::InvalidResponse)?;
+        Self::decode(&bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let value: Self = serde_json::from_slice(bytes).map_err(|_| Error::InvalidResponse)?;
         value.validate()?;
         Ok(value)
     }
@@ -229,6 +234,7 @@ pub fn kind(key: u16) -> Result<u32> {
         25 => VirtualMachineCreationAuthorityObject::KIND.as_raw(),
         31 => ConsoleObject::KIND.as_raw(),
         37 => RootTransitionObject::KIND.as_raw(),
+        EXECUTABLE_AUTHORITY => ExecutableAuthorityObject::KIND.as_raw(),
         100..=123 => ProcessObject::KIND.as_raw(),
         _ => return Err(Error::InvalidResponse),
     })
@@ -266,6 +272,34 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn executable_authority_survives_the_actual_offer_decoder() -> Result<()> {
+        let mut value = offer();
+        value.slots.push(Slot {
+            key: EXECUTABLE_AUTHORITY,
+            rights: Rights::CREATE_EXECUTABLE
+                .union(Rights::TRANSFER)
+                .union(Rights::DUPLICATE)
+                .bits(),
+        });
+        let bytes = serde_json::to_vec(&value).map_err(|_| Error::InvalidResponse)?;
+        let decoded = Offer::decode(&bytes)?;
+        assert_eq!(
+            kind(EXECUTABLE_AUTHORITY)?,
+            ExecutableAuthorityObject::KIND.as_raw()
+        );
+        assert!(
+            decoded
+                .slots
+                .iter()
+                .any(|slot| slot.key == EXECUTABLE_AUTHORITY)
+        );
+        value.slots.last_mut().ok_or(Error::InvalidResponse)?.key = 39;
+        let invalid = serde_json::to_vec(&value).map_err(|_| Error::InvalidResponse)?;
+        assert!(Offer::decode(&invalid).is_err());
+        Ok(())
     }
 
     #[test]
