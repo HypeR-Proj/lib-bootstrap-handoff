@@ -172,7 +172,12 @@ than failing after the irreversible MOVE.
 | 35 | Filesystem manager transfer endpoint | CapabilityChannel |
 | 36 | Old console drain control | ByteChannel |
 | 37 | Pending root transition | RootTransition |
+| 38 | Optional executable publication authority | ExecutableAuthority |
 | 100 + index | Existing core service supervisor | Process |
+
+Role 38 retains the explicitly minted bootstrap authority. It does not grant
+executable publication to ordinary applications: system-startup must export
+`bootstrap.executable-authority`, and each consumer needs an explicit object route.
 
 Optional capabilities already consumed by a service are absent. Keys 15, 23,
 24 and 26–29 are reserved and rejected. Business VM fleet groups, budgets and
